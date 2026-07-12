@@ -6,6 +6,7 @@ import {
   getWatermarkTransform,
   getPatternPoints,
   getDirectionRotationOffset,
+  isStackedDirection,
   getPatternTextAngle,
   drawStamp,
 } from "@/lib/watermark-utils"
@@ -127,16 +128,22 @@ export function WatermarkPreview({
       ctx.textBaseline = "middle"
 
       const patternAngle = getPatternTextAngle(pattern)
+      const stacked = isStackedDirection(textDirection)
+      const stackedLineHeight = stacked ? scaledFontSize * 1.02 : undefined
       const totalRotation = rotation + getDirectionRotationOffset(textDirection) + patternAngle
       const normalizedSpacing = density * sizeScale
       const text = watermarkText || "\u00A0"
-      // Measure the rendered text (font already set on ctx above) so grid/checkerboard
-      // steps scale with the actual text width and never overlap.
-      const textWidth = ctx.measureText(text).width
-      const points = getPatternPoints(containerWidth, containerHeight, pattern, normalizedSpacing, textWidth, scaledFontSize, curveOrientation)
+      // Measure the rendered text (font already set on ctx above); stacked
+      // vertical text occupies a narrow-but-tall box instead.
+      const chars = Array.from(text)
+      const textWidth = stacked
+        ? Math.max(...chars.map((c) => ctx.measureText(c).width), 1)
+        : ctx.measureText(text).width
+      const effTextHeight = stacked ? chars.length * scaledFontSize * 1.02 : scaledFontSize
+      const points = getPatternPoints(containerWidth, containerHeight, pattern, normalizedSpacing, textWidth, effTextHeight, curveOrientation)
 
       for (const pt of points) {
-        drawStamp(ctx, text, pt, totalRotation, curveOrientation)
+        drawStamp(ctx, text, pt, totalRotation, curveOrientation, stackedLineHeight)
       }
     }
 
@@ -185,6 +192,7 @@ export function WatermarkPreview({
   const positionStyle = getPlacementPositionStyle(placement)
   const transformStyle = getWatermarkTransform(placement, rotation, textDirection)
 
+  const stackedSingle = isStackedDirection(textDirection)
   const singleWatermarkStyle: React.CSSProperties = {
     ...positionStyle,
     fontFamily,
@@ -196,6 +204,9 @@ export function WatermarkPreview({
     whiteSpace: "nowrap",
     fontWeight: "bold",
     lineHeight: 1,
+    // Vertical Down = upright letters stacked top-to-bottom, readable without
+    // tilting your head (sign style).
+    ...(stackedSingle ? { writingMode: "vertical-rl" as const, textOrientation: "upright" as const, letterSpacing: "0.05em" } : {}),
     pointerEvents: "none",
     userSelect: "none",
   }

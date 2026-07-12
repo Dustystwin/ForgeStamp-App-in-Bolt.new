@@ -33,8 +33,14 @@ export function getPlacementStyle(
 }
 
 // Returns the rotation (in degrees) that converts horizontal text to the chosen direction
+// Vertical Down renders as STACKED upright letters (like a vertical sign you can
+// read without tilting your head), so it contributes no rotation offset.
+export function isStackedDirection(dir: TextDirection): boolean {
+  return dir === "vertical-down"
+}
+
 export function getDirectionRotationOffset(dir: TextDirection): number {
-  if (dir === "vertical-down") return 90
+  if (dir === "vertical-down") return 0
   if (dir === "vertical-up") return -90
   return 0
 }
@@ -102,7 +108,10 @@ export function drawStamp(
   text: string,
   pt: GridPoint,
   totalRotationDeg: number,
-  orientation: CurveOrientation = "natural"
+  orientation: CurveOrientation = "natural",
+  // When set, draw upright letters stacked vertically (sign-style "Vertical
+  // Down"); the value is the line height between stacked characters.
+  stackedLineHeight?: number
 ) {
   if (pt.arc && pt.arc.r > 4) {
     const { cx, cy, r } = pt.arc
@@ -142,7 +151,15 @@ export function drawStamp(
   if (pt.fontScale && pt.fontScale < 1) {
     ctx.scale(pt.fontScale, pt.fontScale)
   }
-  ctx.fillText(text, 0, 0)
+  if (stackedLineHeight && !pt.arc) {
+    const chars = Array.from(text)
+    const startY = -((chars.length - 1) / 2) * stackedLineHeight
+    for (let i = 0; i < chars.length; i++) {
+      ctx.fillText(chars[i], 0, startY + i * stackedLineHeight)
+    }
+  } else {
+    ctx.fillText(text, 0, 0)
+  }
   ctx.restore()
 }
 
@@ -192,8 +209,10 @@ export function getPatternPoints(
   // Optional custom steps let patterns like Lattice use tight along-band
   // spacing with wide band separation.
   function addTiltedGrid(tiltDeg: number, angle = 0, xStepOverride?: number, yStepOverride?: number) {
-    const xStep = xStepOverride ?? Math.max(spacing, textWidth + spacing * 0.25)
-    const yStep = yStepOverride ?? minRowStep
+    const xStep = xStepOverride ?? Math.max(spacing, textWidth + Math.max(spacing * 0.25, textHeight * 1.2))
+    // Staggered tilted rows need extra perpendicular room or adjacent rows'
+    // stamps visually chain into cluttered bands.
+    const yStep = yStepOverride ?? Math.max(spacing, textHeight * 1.85)
     const tilt = (tiltDeg * Math.PI) / 180
     const cos = Math.cos(tilt)
     const sin = Math.sin(tilt)
@@ -204,7 +223,9 @@ export function getPatternPoints(
     const rowPad = Math.ceil(diag / yStep) + 2
     for (let r = -rowPad; r <= rowPad; r++) {
       for (let c = -colPad; c <= colPad; c++) {
-        const gx = c * xStep
+        // Alternate rows shift by half a step so stamps never align into
+        // columns — eliminating the empty "channels" between diagonal rows.
+        const gx = (c + (r & 1 ? 0.5 : 0)) * xStep
         const gy = r * yStep
         const x = cx + gx * cos - gy * sin
         const y = cy + gx * sin + gy * cos
@@ -265,8 +286,12 @@ export function getPatternPoints(
     // Deterministic pseudo-random scatter.  Each cell center is offset by up to
     // ±40 % of the spacing in both axes, giving clear visual variety without
     // clustering all items into one corner.
-    const cellW = Math.max(spacing, textWidth * 0.9)
-    const cellH = Math.max(spacing, textHeight * 1.6)
+    // Cells are at least text-sized; jitter is bounded to the free space inside
+    // each cell, so placement stays random but neighbors can never overlap.
+    const cellW = Math.max(spacing, textWidth * 1.05)
+    const cellH = Math.max(spacing, textHeight * 1.9)
+    const freeX = Math.max(0, (cellW - textWidth) / 2)
+    const freeY = Math.max(0, cellH / 2 - textHeight * 0.85)
     const cols = Math.ceil(width  / cellW) + 1
     const rows = Math.ceil(height / cellH) + 1
     for (let r = 0; r < rows; r++) {
@@ -274,8 +299,8 @@ export function getPatternPoints(
         const seed = r * 1000 + c
         const jx = ((seed * 9301 + 49297) % 233280) / 233280
         const jy = ((seed * 6571 + 29311) % 233280) / 233280
-        const x = (c + 0.5) * cellW + (jx - 0.5) * cellW * 0.5
-        const y = (r + 0.5) * cellH + (jy - 0.5) * cellH * 0.5
+        const x = (c + 0.5) * cellW + (jx - 0.5) * 2 * freeX
+        const y = (r + 0.5) * cellH + (jy - 0.5) * 2 * freeY
         points.push({ x, y, angle: 0 })
       }
     }
@@ -283,13 +308,14 @@ export function getPatternPoints(
     // Rows follow a gentle sine curve; each item tilts to match the local slope.
     const xStep = Math.max(spacing, textWidth + spacing * 0.3)
     const yStep = minRowStep
-    const amp = yStep * 0.25
-    const freq = (2 * Math.PI * 1.5) / width
+    const amp = yStep * 0.35
+    const freq = (2 * Math.PI * 2.2) / width
     for (let row = 0; ; row++) {
       const y0 = yStep / 2 + row * yStep
       if (y0 > height + yStep) break
-      for (let col = 0; ; col++) {
-        const x = xStep / 2 + col * xStep
+      const stagger = row % 2 === 1 ? xStep / 2 : 0
+      for (let col = -1; ; col++) {
+        const x = xStep / 2 + col * xStep + stagger
         if (x > width + xStep) break
         const ph = x * freq
         const y = y0 + amp * Math.sin(ph)
@@ -375,7 +401,10 @@ export function getPatternPoints(
     const clear = Math.max(textHeight * 1.2, spacing * 0.25)
     const r0 = clear + textWidth / 2
     const rStep = Math.max(spacing, textWidth + spacing * 0.2)
-    const rays = Math.max(8, Math.min(32, Math.round(1600 / spacing)))
+    // Cap ray count by geometry: adjacent rays at the inner radius must have
+    // room for the text height, or the hub becomes an unreadable bunch.
+    const geometricMax = Math.max(4, Math.floor((2 * Math.PI * r0) / (textHeight * 1.7)))
+    const rays = Math.min(geometricMax, Math.max(8, Math.min(32, Math.round(1600 / spacing))))
     for (let i = 0; i < rays; i++) {
       const theta = (i * 2 * Math.PI) / rays
       for (let r = r0; r <= maxRadius + rStep; r += rStep) {
@@ -500,16 +529,26 @@ export async function drawWatermarkOnCanvas(
   // so each pattern looks correct at rotation=0.
   // In single mode, only direction offset + user rotation apply.
   const patternAngle = coverageMode === "full" ? getPatternTextAngle(pattern) : 0
+  const stacked = isStackedDirection(textDirection)
+  const stackedLineHeight = stacked ? clampedFontSize * 1.02 : undefined
   const totalRotation = rotation + getDirectionRotationOffset(textDirection) + patternAngle
 
   if (coverageMode === "full") {
     const normalizedSpacing = density * sizeScale
     // Measure the actual rendered text width (font is already set on ctx above)
     // so grid/checkerboard can guarantee non-overlapping columns.
-    const textWidth = ctx.measureText(text || "\u00A0").width
-    const points = getPatternPoints(imageWidth, imageHeight, pattern, normalizedSpacing, textWidth, clampedFontSize, curveOrientation)
+    const rawText = text || "\u00A0"
+    // Stacked vertical text has a narrow-but-tall footprint; feed the pattern
+    // generator the real occupied dimensions so spacing math stays correct.
+    const chars = Array.from(rawText)
+    const measuredWidth = ctx.measureText(rawText).width
+    const textWidth = stacked
+      ? Math.max(...chars.map((c) => ctx.measureText(c).width), 1)
+      : measuredWidth
+    const effTextHeight = stacked ? chars.length * clampedFontSize * 1.02 : clampedFontSize
+    const points = getPatternPoints(imageWidth, imageHeight, pattern, normalizedSpacing, textWidth, effTextHeight, curveOrientation)
     for (const pt of points) {
-      drawStamp(ctx, text || "\u00A0", pt, totalRotation, curveOrientation)
+      drawStamp(ctx, text || "\u00A0", pt, totalRotation, curveOrientation, stackedLineHeight)
     }
   } else {
     const pad = imageWidth * 0.08
@@ -531,7 +570,15 @@ export async function drawWatermarkOnCanvas(
     ctx.save()
     ctx.translate(x, y)
     ctx.rotate((totalRotation * Math.PI) / 180)
-    ctx.fillText(text || "\u00A0", 0, 0)
+    if (stackedLineHeight) {
+      const chars = Array.from(text || "\u00A0")
+      const startY = -((chars.length - 1) / 2) * stackedLineHeight
+      for (let i = 0; i < chars.length; i++) {
+        ctx.fillText(chars[i], 0, startY + i * stackedLineHeight)
+      }
+    } else {
+      ctx.fillText(text || "\u00A0", 0, 0)
+    }
     ctx.restore()
   }
 }
