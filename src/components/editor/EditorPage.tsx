@@ -121,7 +121,7 @@ export function EditorPage({ onNavigateHome }: EditorPageProps) {
           <span className="text-sm font-black tracking-tight">
             ForgeStamp
             <span className="ml-1.5 align-middle rounded bg-muted px-1 py-0.5 text-[9px] font-semibold text-muted-foreground">
-              v6
+              v5
             </span>
           </span>
           <div className="flex items-center gap-2">
